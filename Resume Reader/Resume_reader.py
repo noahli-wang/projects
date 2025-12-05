@@ -1,12 +1,15 @@
-import fitz  
-import re
-import spacy
+import fitz  #PyMuPDF
+import re   #regex
+import spacy #spacy
 from datetime import datetime
 
+
+#Trained neural network to look for Specific Keywords
 nlp = spacy.load("en_core_web_sm")
 
+
+#Extract text from the document
 def extract_text_from_pdf(pdf_path):
-    #Extract raw text from pdf 
     with fitz.open(pdf_path) as doc:
         text = ""
         for page in doc:
@@ -19,85 +22,165 @@ def normalize_text(text):
     return cleaned_text.strip()
 
 
-
-def extract_name_from_top(text, n_lines=15):
-    lines = text.split('\n')
-    top_text = '\n'.join(lines[:n_lines])
-    doc = nlp(top_text)
-    candidates = [
-        ent.text.strip() for ent in doc.ents
-        if ent.label_ == "PERSON" and len(ent.text.strip().split()) > 1
-    ]
+#Gets the name from the cleaned text
+def findName(text):
+    #Trained Model to tokenize text and sort it 
+    doc = nlp(text)   
+    #Find text that think is a persons name
+    candidates = [ent.text.strip() for ent in doc.ents if ent.label_ == "PERSON"]
+    #Filter
+    candidates = [c for c in candidates if len(c.split()) >= 2]
+    #If candidates is empty
     if not candidates:
         return None
+    
+    #If found multiple names, choose the longest one 
     candidates.sort(key=lambda x: len(x.split()), reverse=True)
     return candidates[0]
 
-def extract_graduation_year(text):
+
+def findGradYear(text):
     current_year = datetime.now().year
-    grad_phrases = re.findall(
-        r'(expected|graduated|graduation)[^\d]{0,15}(\d{4})',
-        text, flags=re.IGNORECASE
-    )
-    for _, year_str in grad_phrases:
-        year = int(year_str)
-        if 1900 <= year <= current_year + 5:
-            return str(year)
-    years = re.findall(r'\b(19\d{2}|20\d{2}|2030)\b', text)
-    years = [int(y) for y in years if 1900 <= int(y) <= current_year + 5]
-    return str(max(years)) if years else None
+    #Finds 4 digit years number using regex
+    years = re.findall(r'\b(19\d{2}|20\d{2})\b', text)
+    #Validating Years
+    validYears = []
+    for y in years:
+        yearNum = int(y)
+        if 1900 <= yearNum <= current_year + 6:
+            validYears.append(y)
 
-def is_skill_line(line):
-    doc = nlp(line)
-    nouns = sum(1 for token in doc if token.pos_ in ('NOUN', 'PROPN', 'ADJ'))
-    verbs = sum(1 for token in doc if token.pos_ == 'VERB')
-    return nouns > 0 and verbs == 0 and len(line.split()) <= 7
+    if(len(years)) > 0:
+        latest_year = max(years)
+        return str(latest_year)
+    return None
 
-def extract_skills_adaptive(lines):
-    skill_headers = ['skills', 'expertise', 'technical skills', 'core competencies', 'abilities', 'strengths']
-    collected = []
-    collecting = False
-    max_lines = 10
+def findEmail(text):
+    #Finds anything that matches any letters and @ then a . domain
+    match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
+    if match:
+        email = match.group(0)
+        return email
+    return None
 
+
+def extractSkills(text):
+    lines = text.split('\n')
+    #Common headers that people put on their resumes to display their skilsl
+    headers = ["skills", "technical", "abilities", "strengths"]
+
+
+    collect = False
+    foundHeader = False
+    skill = []
+
+    #Go thorugh each line until we find one of the names from a header
     for line in lines:
-        lower = line.lower().strip()
-        if any(h in lower for h in skill_headers):
-            collecting = True
-            continue
-        if collecting:
-            if not line.strip() or len(collected) >= max_lines:
+        lower = line.lower()
+
+        # Check if this line *starts* the skills section
+        for h in headers:
+            if h in lower:
+                collect  = True
+                # Don't treat the header line itself as a skill
+                continue
+        
+        # Once we are collecting, try to capture skills
+        if collect:
+
+             # Stop when reaching a new section
+            stop_words = ["education", "experience", "work history","projects", "volunteer", "certifications"]
+            if any(w in line.lower() for w in stop_words):
                 break
-            if is_skill_line(line):
-                collected.append(line.strip())
 
-    skill_text = ' '.join(collected)
-    parts = re.split(r'[•,\-\|\n;·●]', skill_text)
-    skills = [p.strip() for p in parts if p.strip()]
-    return skills if skills else None
+            # Stop when we hit a blank line (new section)
+            if not line.strip():
+                break
 
-def extract_fields(text):
-    result = {}
+            #Look for key words, nouns, verbs, adj
+            doc = nlp(line)
+            #Let spacy find words that it thinks are nouns, proper nouns, adjectives, and verbs
+            allowedNouns = ("NOUN", "PROPN", "ADJ")
+            allowedVerbs = ("Verbs")
+            #count the amount of nouns and verbs  in per line for filtering later on
+            nouns = 0 
+            verbs = 0 
 
-    lines = [line.strip() for line in text.split('\n') if line.strip()]
-    result['Name'] = extract_name_from_top(text)
+            for token in doc:
+                if token.pos_ == "NOUN" or token.pos_ == "PROPN" or token.pos_ == "ADJ":
+                    nouns += 1
+                elif token.pos_ == "VERB":
+                    verbs += 1
 
-    email_match = re.search(r'[\w\.-]+@[\w\.-]+\.\w+', text)
-    result['Email'] = email_match.group(0) if email_match else None
+            #if line only contains nouns and no verbs, must be a skill
+            if nouns >= 1 and verbs == 0:
+                skill.append(line.strip())
+    
+    #Final cleaning up
+    finalSkills = []
+    for s in skill:
+        #Removes any bulletins that might be there
+        parts = re.split(r'[•,\-\|\n;·●]', s)
+        for p in parts:
+            p = p.strip().title()
+            if p not in finalSkills:
+                finalSkills.append(p)
 
-    result['GraduationYear'] = extract_graduation_year(text)
-
-    skills = extract_skills_adaptive(lines)
-    result['Skills'] = ', '.join(skills) if skills else None
-
-    return result
+    if finalSkills:
+        return finalSkills
+    return None
 
 
 
-with open("OfficialOfficialResume.pdf", "rb") as f:
-    doc = fitz.open(stream=f.read(), filetype="pdf")
-    text = ""
-    for page in doc:
-        text += page.get_text()
+def printResume(pdf_path):
 
-data = extract_fields(text)
-print(data)
+    raw_text = extract_text_from_pdf(pdf_path)
+    text = normalize_text(raw_text)
+
+    results = {}
+
+    results["Name"] = findName(text)
+    results["Email"] = findEmail(text)
+    results["Graduation Year"] = findGradYear(text)
+    results["Skills"] = extractSkills(raw_text)
+
+    return results
+
+
+#----------User Input---------------------------
+
+output = printResume("inputhere.pdf")
+
+print("\n=================Resume Summary=================")
+if output["Name"]:
+    print(f"Name: {output['Name']}")
+
+if output["Email"]:
+    print(f"Email: {output['Email']}")
+
+if output["Graduation Year"]:
+    print(f"Graduation Year: {output['Graduation Year']}")
+
+if output["Skills"]:
+    print("\nSkills:")
+    for skill in output["Skills"]:
+        print(f"  - {skill}")
+
+
+
+
+
+
+            
+
+
+
+
+            
+
+            
+
+
+
+
+
